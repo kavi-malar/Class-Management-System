@@ -4,6 +4,8 @@ import { FormsModule } from '@angular/forms';
 import { NavbarComponent } from '../../shared/navbar/navbar.component';
 import { TimetableService } from '../../../services/timetable.service';
 
+type ActionType = 'cancelled' | 'restored' | 'extra_offered' | 'extra_withdrawn' | 'room_updated' | 'all';
+
 @Component({
   selector: 'app-teacher-changes',
   standalone: true,
@@ -13,21 +15,30 @@ import { TimetableService } from '../../../services/timetable.service';
     <main class="page-container">
 
       <div class="page-header">
-        <h1><i class="fas fa-history"></i> My Timetable Changes</h1>
-        <p>Manage your cancelled periods. You can restore a period back to <strong>available</strong> as long as you do it <strong>at least one day before</strong>.</p>
+        <h1><i class="fas fa-history"></i> My Activity History</h1>
+        <p>Complete log of all actions — cancellations, restorations, extra classes, and room changes. Newest first.</p>
       </div>
 
       <!-- Filter bar -->
       <div class="filter-bar card">
         <div class="filter-group">
-          <label><i class="fas fa-filter"></i> Filter by status</label>
+          <label><i class="fas fa-filter"></i> Filter by action</label>
           <div class="btn-group">
-            <button class="btn btn-sm" [class.btn-primary]="filter==='all'"       (click)="setFilter('all')">All</button>
-            <button class="btn btn-sm" [class.btn-danger]="filter==='cancelled'"  [class.btn-secondary]="filter!=='cancelled'"  (click)="setFilter('cancelled')">
+            <button class="btn btn-sm" [class.btn-primary]="filter==='all'"             (click)="setFilter('all')">All</button>
+            <button class="btn btn-sm" [class.btn-danger]="filter==='cancelled'"        [class.btn-secondary]="filter!=='cancelled'"       (click)="setFilter('cancelled')">
               <i class="fas fa-times-circle"></i> Cancelled
             </button>
-            <button class="btn btn-sm" [class.btn-success]="filter==='available'" [class.btn-secondary]="filter!=='available'" (click)="setFilter('available')">
-              <i class="fas fa-check-circle"></i> Restored
+            <button class="btn btn-sm" [class.btn-success]="filter==='restored'"        [class.btn-secondary]="filter!=='restored'"        (click)="setFilter('restored')">
+              <i class="fas fa-undo"></i> Restored
+            </button>
+            <button class="btn btn-sm" [class.btn-info]="filter==='extra_offered'"      [class.btn-secondary]="filter!=='extra_offered'"   (click)="setFilter('extra_offered')">
+              <i class="fas fa-plus-circle"></i> Extra Offered
+            </button>
+            <button class="btn btn-sm" [class.btn-warning]="filter==='extra_withdrawn'" [class.btn-secondary]="filter!=='extra_withdrawn'" (click)="setFilter('extra_withdrawn')">
+              <i class="fas fa-minus-circle"></i> Extra Withdrawn
+            </button>
+            <button class="btn btn-sm" [class.btn-secondary]="filter!=='room_updated'"  [class.btn-purple]="filter==='room_updated'"       (click)="setFilter('room_updated')">
+              <i class="fas fa-map-marker-alt"></i> Room Updated
             </button>
           </div>
         </div>
@@ -37,6 +48,10 @@ import { TimetableService } from '../../../services/timetable.service';
           <button *ngIf="dateFilter" class="btn btn-secondary btn-sm" (click)="dateFilter=''; applyFilters()">
             <i class="fas fa-times"></i>
           </button>
+        </div>
+        <div class="filter-group">
+          <label>&nbsp;</label>
+          <span class="count-badge">{{ displayed.length }} record{{ displayed.length !== 1 ? 's' : '' }}</span>
         </div>
       </div>
 
@@ -48,11 +63,11 @@ import { TimetableService } from '../../../services/timetable.service';
 
       <!-- Table -->
       <div class="card">
-        <div *ngIf="loading" class="loading-center"><div class="spinner"></div><p>Loading...</p></div>
+        <div *ngIf="loading" class="loading-center"><div class="spinner"></div><p>Loading history...</p></div>
 
         <div *ngIf="!loading && displayed.length === 0" class="empty-state">
           <i class="fas fa-clipboard-check"></i>
-          <p>No changes found for the selected filters.</p>
+          <p>No activity found for the selected filters.</p>
         </div>
 
         <div *ngIf="!loading && displayed.length > 0" class="table-wrapper">
@@ -63,95 +78,114 @@ import { TimetableService } from '../../../services/timetable.service';
                 <th>Period</th>
                 <th>Time</th>
                 <th>Subject</th>
-                <th>Reason</th>
-                <th>Status</th>
-                <th>Available for Extra Class</th>
-                <th>SMS</th>
+                <th>Class</th>
+                <th>Room</th>
+                <th>Action</th>
+                <th>Details</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              <tr *ngFor="let c of displayed" [class.row-available]="c.status==='available'" [class.row-cancelled]="c.status==='cancelled'">
+              <tr *ngFor="let item of displayed" [class]="rowClass(item)">
 
                 <!-- Date -->
                 <td>
-                  <div class="date-primary">{{ c.changeDate | date:'dd MMM yyyy' }}</div>
-                  <div class="date-sub">{{ c.changeDate | date:'EEEE' }}</div>
+                  <div class="date-primary">{{ formatDate(item.date) }}</div>
+                  <div class="date-sub">{{ formatDay(item.date) }}</div>
                 </td>
 
                 <!-- Period -->
-                <td><span class="p-badge">P{{ c.periodNumber }}</span></td>
+                <td>
+                  <span class="p-badge">P{{ item.periodNumber }}</span>
+                  <span *ngIf="item.dayOfWeek" class="day-badge">{{ item.dayOfWeek.slice(0,3) }}</span>
+                </td>
 
                 <!-- Time -->
-                <td class="nowrap">{{ c.startTime }} – {{ c.endTime }}</td>
+                <td class="nowrap">{{ item.startTime }} – {{ item.endTime }}</td>
 
                 <!-- Subject -->
-                <td><strong>{{ c.subject?.name }}</strong></td>
+                <td><strong>{{ item.subject?.name || '—' }}</strong></td>
 
-                <!-- Reason -->
-                <td class="reason-cell">{{ c.reason }}</td>
+                <!-- Class -->
+                <td>{{ item.className || '—' }}</td>
 
-                <!-- Status badge -->
+                <!-- Room -->
                 <td>
-                  <span class="badge" [class.badge-danger]="c.status==='cancelled'" [class.badge-success]="c.status==='available'">
-                    <i class="fas" [class.fa-times-circle]="c.status==='cancelled'" [class.fa-check-circle]="c.status==='available'"></i>
-                    {{ c.status === 'cancelled' ? 'Cancelled' : 'Available' }}
+                  <span class="room-pill" [class.room-tbd]="!item.classroomNo || item.classroomNo==='TBD'">
+                    <i class="fas fa-map-marker-alt"></i> {{ item.classroomNo || 'TBD' }}
                   </span>
                 </td>
 
-                <!-- Feature 5: Available for Extra Class column -->
-                <td class="offerable-cell">
-                  <ng-container *ngIf="c.status === 'cancelled'">
-                    <span *ngIf="c.offerable && !c.claimedBy" class="offerable-badge offerable-yes">
-                      <i class="fas fa-check-circle"></i> Yes — Open
-                    </span>
-                    <span *ngIf="c.offerable && c.claimedBy" class="offerable-badge offerable-claimed">
-                      <i class="fas fa-user-check"></i> Claimed by {{ c.claimedBy?.name || 'another teacher' }}
-                    </span>
-                    <span *ngIf="!c.offerable" class="offerable-badge offerable-no">
-                      <i class="fas fa-times-circle"></i> No (same-day)
-                    </span>
-                  </ng-container>
-                  <span *ngIf="c.status !== 'cancelled'" class="offerable-badge offerable-na">—</span>
-                </td>
-
-                <!-- SMS -->
+                <!-- Action badge -->
                 <td>
-                  <span class="badge" [class.badge-success]="c.smsSent" [class.badge-warning]="!c.smsSent">
-                    {{ c.smsSent ? 'Sent' : 'Pending' }}
+                  <span class="action-badge" [class]="actionClass(item.actionType)">
+                    <i class="fas" [class]="actionIcon(item.actionType)"></i>
+                    {{ actionLabel(item.actionType) }}
                   </span>
                 </td>
 
-                <!-- Actions -->
+                <!-- Details -->
+                <td class="details-cell">
+                  <span *ngIf="item.actionType==='cancelled'">
+                    {{ item.reason }}
+                    <br *ngIf="item.offerable">
+                    <span *ngIf="item.offerable && !item.claimedBy" class="offerable-badge offerable-yes">
+                      <i class="fas fa-check-circle"></i> Open for extra class
+                    </span>
+                    <span *ngIf="item.offerable && item.claimedBy" class="offerable-badge offerable-claimed">
+                      <i class="fas fa-user-check"></i> Claimed by {{ item.claimedBy?.name }}
+                    </span>
+                    <span *ngIf="!item.offerable" class="offerable-badge offerable-no">
+                      <i class="fas fa-times-circle"></i> Same-day — not offerable
+                    </span>
+                  </span>
+                  <span *ngIf="item.actionType==='restored'">Class restored — students notified</span>
+                  <span *ngIf="item.actionType==='extra_offered'">{{ item.note || 'Extra class offered' }}</span>
+                  <span *ngIf="item.actionType==='extra_withdrawn'">Extra class withdrawn</span>
+                  <span *ngIf="item.actionType==='room_updated'">
+                    Classroom set to <strong>{{ item.classroomNo }}</strong> on {{ item.dayOfWeek }}
+                  </span>
+                </td>
+
+                <!-- Actions column: only for cancellations/restorations -->
                 <td class="action-cell">
-                  <!-- RESTORE button: only if cancelled AND date is in the future -->
                   <button
-                    *ngIf="c.status === 'cancelled' && isFuture(c.changeDate)"
+                    *ngIf="item.actionType==='cancelled' && isFuture(item.date)"
                     class="btn btn-success btn-sm action-btn"
-                    [disabled]="busy === c._id"
-                    (click)="restorePeriod(c)"
-                    title="Mark this period as available again (sends SMS to students)"
+                    [disabled]="busy === item._id"
+                    (click)="restorePeriod(item)"
+                    title="Restore this period"
                   >
-                    <i class="fas" [class.fa-circle-notch]="busy===c._id" [class.fa-spin]="busy===c._id" [class.fa-undo]="busy!==c._id"></i>
-                    {{ busy === c._id ? '' : 'Restore' }}
+                    <i class="fas" [class.fa-circle-notch]="busy===item._id" [class.fa-spin]="busy===item._id" [class.fa-undo]="busy!==item._id"></i>
+                    {{ busy === item._id ? '' : 'Restore' }}
                   </button>
 
-                  <!-- RE-CANCEL button: only if restored AND date is in the future -->
                   <button
-                    *ngIf="c.status === 'available' && isFuture(c.changeDate)"
+                    *ngIf="item.actionType==='restored' && isFuture(item.date)"
                     class="btn btn-danger btn-sm action-btn"
-                    [disabled]="busy === c._id"
-                    (click)="cancelPeriod(c)"
+                    [disabled]="busy === item._id"
+                    (click)="cancelPeriod(item)"
                     title="Cancel this period again"
                   >
-                    <i class="fas" [class.fa-circle-notch]="busy===c._id" [class.fa-spin]="busy===c._id" [class.fa-times]="busy!==c._id"></i>
-                    {{ busy === c._id ? '' : 'Cancel Again' }}
+                    <i class="fas" [class.fa-circle-notch]="busy===item._id" [class.fa-spin]="busy===item._id" [class.fa-times]="busy!==item._id"></i>
+                    {{ busy === item._id ? '' : 'Cancel Again' }}
                   </button>
 
-                  <!-- Past indicator -->
-                  <span *ngIf="!isFuture(c.changeDate)" class="past-label">
+                  <button
+                    *ngIf="item.actionType==='extra_offered'"
+                    class="btn btn-warning btn-sm action-btn"
+                    [disabled]="busy === item._id"
+                    (click)="withdrawExtra(item)"
+                    title="Withdraw this extra class"
+                  >
+                    <i class="fas" [class.fa-circle-notch]="busy===item._id" [class.fa-spin]="busy===item._id" [class.fa-minus]="busy!==item._id"></i>
+                    {{ busy === item._id ? '' : 'Withdraw' }}
+                  </button>
+
+                  <span *ngIf="!isFuture(item.date) && (item.actionType==='cancelled' || item.actionType==='restored')" class="past-label">
                     <i class="fas fa-lock"></i> Past
                   </span>
+                  <span *ngIf="item.actionType==='extra_withdrawn' || item.actionType==='room_updated'" class="past-label">—</span>
                 </td>
               </tr>
             </tbody>
@@ -160,92 +194,84 @@ import { TimetableService } from '../../../services/timetable.service';
 
         <!-- Legend -->
         <div class="legend" *ngIf="!loading && displayed.length > 0">
-          <span class="legend-item"><span class="dot dot-red"></span> Cancelled — students notified, period is off</span>
-          <span class="legend-item"><span class="dot dot-green"></span> Restored — students notified, period is back on</span>
-          <span class="legend-item"><i class="fas fa-lock" style="color:var(--text-muted);font-size:.7rem"></i> Past — no changes allowed</span>
+          <span class="legend-item"><span class="dot dot-red"></span> Cancelled</span>
+          <span class="legend-item"><span class="dot dot-green"></span> Restored</span>
+          <span class="legend-item"><span class="dot dot-blue"></span> Extra Class Offered</span>
+          <span class="legend-item"><span class="dot dot-orange"></span> Extra Class Withdrawn</span>
+          <span class="legend-item"><span class="dot dot-purple"></span> Room Updated</span>
         </div>
       </div>
-
-      <!-- Info box -->
-      <div class="card info-box">
-        <h3><i class="fas fa-info-circle"></i> How Restore Works</h3>
-        <div class="info-steps">
-          <div class="step"><div class="step-num">1</div><div>You previously marked a period as cancelled.</div></div>
-          <div class="step"><div class="step-num">2</div><div>You decide you are now available — click <strong>Restore</strong>.</div></div>
-          <div class="step"><div class="step-num">3</div><div>The system only allows this <strong>at least 1 day before</strong> the scheduled date.</div></div>
-          <div class="step"><div class="step-num">4</div><div>All students receive an SMS: <em>"Class is back on!"</em></div></div>
-        </div>
-      </div>
-
     </main>
   `,
   styles: [`
-    .page-container { max-width: 1150px; margin: 0 auto; padding: 2rem 1.5rem; }
+    .page-container { max-width: 1250px; margin: 0 auto; padding: 2rem 1.5rem; }
 
-    /* Filter bar */
     .filter-bar { display: flex; align-items: flex-end; gap: 2rem; margin-bottom: 1.25rem; flex-wrap: wrap; }
     .filter-group { display: flex; flex-direction: column; gap: 0.4rem; }
     .filter-group label { font-size: 0.8rem; font-weight: 600; color: var(--text-muted); display: flex; align-items: center; gap: 0.35rem; }
-    .btn-group { display: flex; gap: 0.35rem; }
+    .btn-group { display: flex; gap: 0.35rem; flex-wrap: wrap; }
     .date-filter { width: 170px; padding: 0.45rem 0.75rem; font-size: 0.85rem; }
+    .count-badge { background: var(--primary); color: #fff; padding: 0.3rem 0.75rem; border-radius: 20px; font-size: 0.8rem; font-weight: 600; }
 
-    /* Toast */
-    .toast {
-      padding: 0.85rem 1.1rem; border-radius: var(--radius-sm);
-      margin-bottom: 1rem; font-size: 0.875rem;
-      display: flex; align-items: center; gap: 0.6rem;
-      animation: fadeIn 0.3s ease;
-    }
+    .toast { padding: 0.85rem 1.1rem; border-radius: var(--radius-sm); margin-bottom: 1rem; font-size: 0.875rem; display: flex; align-items: center; gap: 0.6rem; animation: fadeIn 0.3s ease; }
     .toast-success { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
     .toast-error   { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
     @keyframes fadeIn { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:none; } }
 
-    /* Table rows */
-    tr.row-cancelled { background: #fff9f9; }
-    tr.row-available { background: #f0fdf4; }
+    tr.row-cancelled  { background: #fff9f9; }
+    tr.row-restored   { background: #f0fdf4; }
+    tr.row-extra      { background: #eff6ff; }
+    tr.row-withdrawn  { background: #fefce8; }
+    tr.row-room       { background: #faf5ff; }
 
     .date-primary { font-weight: 600; font-size: 0.9rem; }
     .date-sub     { font-size: 0.75rem; color: var(--text-muted); }
     .p-badge      { background: var(--primary); color: #fff; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 700; }
+    .day-badge    { display: block; font-size: 0.7rem; color: var(--text-muted); margin-top: 0.15rem; }
     .nowrap       { white-space: nowrap; }
-    .reason-cell  { max-width: 160px; font-size: 0.82rem; color: var(--text-muted); }
+    .details-cell { max-width: 200px; font-size: 0.82rem; color: var(--text-muted); }
     .action-cell  { white-space: nowrap; }
     .action-btn   { min-width: 90px; justify-content: center; }
     .past-label   { font-size: 0.75rem; color: var(--text-muted); display: flex; align-items: center; gap: 0.3rem; }
 
-    /* Legend */
-    .legend { display: flex; gap: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); margin-top: 0.75rem; flex-wrap: wrap; }
-    .legend-item { display: flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; color: var(--text-muted); }
-    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-    .dot-red   { background: var(--danger); }
-    .dot-green { background: var(--success); }
+    .room-pill    { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.18rem 0.5rem; border-radius: 5px; font-size: 0.75rem; font-weight: 600; background: #ede9fe; color: #4f46e5; }
+    .room-tbd     { background: #f3f4f6; color: #9ca3af; }
 
-    /* Info box */
-    .info-box { margin-top: 1.5rem; }
-    .info-box h3 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; color: var(--primary); }
-    .info-steps { display: flex; flex-direction: column; gap: 0.7rem; }
-    .step { display: flex; gap: 0.75rem; align-items: flex-start; }
-    .step-num { min-width: 24px; height: 24px; background: var(--primary); color: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; font-weight: 700; }
-    .step div:last-child { font-size: 0.875rem; color: var(--text-muted); padding-top: 3px; line-height: 1.5; }
+    .action-badge { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.22rem 0.6rem; border-radius: 6px; font-size: 0.75rem; font-weight: 700; white-space: nowrap; }
+    .ab-cancelled  { background: #fee2e2; color: #991b1b; }
+    .ab-restored   { background: #d1fae5; color: #065f46; }
+    .ab-extra      { background: #dbeafe; color: #1e40af; }
+    .ab-withdrawn  { background: #fef9c3; color: #854d0e; }
+    .ab-room       { background: #f3e8ff; color: #6b21a8; }
 
-    .empty-state { text-align: center; padding: 3rem; color: var(--text-muted); }
-    .empty-state i { font-size: 3rem; opacity: 0.3; display: block; margin-bottom: 1rem; }
-
-    /* Feature 5: offerable column */
-    .offerable-cell { min-width: 160px; }
-    .offerable-badge { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.55rem; border-radius: 6px; font-size: 0.74rem; font-weight: 600; white-space: nowrap; }
+    .offerable-badge { display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.2rem 0.55rem; border-radius: 6px; font-size: 0.72rem; font-weight: 600; white-space: nowrap; }
     .offerable-yes     { background: #d1fae5; color: #065f46; }
     .offerable-claimed { background: #ede9fe; color: #4c1d95; }
     .offerable-no      { background: #f3f4f6; color: #6b7280; }
-    .offerable-na      { color: #9ca3af; font-size: 0.8rem; }
+
+    .btn-info    { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+    .btn-warning { background: #f59e0b; color: #fff; border-color: #f59e0b; }
+    .btn-purple  { background: #7c3aed; color: #fff; border-color: #7c3aed; }
+
+    .legend { display: flex; gap: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--border); margin-top: 0.75rem; flex-wrap: wrap; }
+    .legend-item { display: flex; align-items: center; gap: 0.4rem; font-size: 0.78rem; color: var(--text-muted); }
+    .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    .dot-red    { background: #ef4444; }
+    .dot-green  { background: #22c55e; }
+    .dot-blue   { background: #3b82f6; }
+    .dot-orange { background: #f59e0b; }
+    .dot-purple { background: #7c3aed; }
+
+    .empty-state { text-align: center; padding: 3rem; color: var(--text-muted); }
+    .empty-state i { font-size: 3rem; opacity: 0.3; display: block; margin-bottom: 1rem; }
   `]
 })
 export class TeacherChangesComponent implements OnInit {
-  all: any[] = [];
+  all:       any[] = [];
   displayed: any[] = [];
   loading = true;
-  busy = '';          // _id of the row currently being processed
-  filter = 'all';
+  busy    = '';
+  filter: string = 'all';
   dateFilter = '';
 
   toast = { show: false, message: '', type: 'success' };
@@ -256,13 +282,28 @@ export class TeacherChangesComponent implements OnInit {
 
   loadAll(): void {
     this.loading = true;
-    this.timetableService.getChanges().subscribe({
+    this.timetableService.getMyHistory().subscribe({
       next: (res) => {
-        this.all = res.changes || [];
+        this.all = res.history || [];
         this.applyFilters();
         this.loading = false;
       },
-      error: () => { this.loading = false; }
+      error: () => {
+        // Fallback to old endpoint
+        this.timetableService.getChanges().subscribe({
+          next: (res) => {
+            this.all = (res.changes || []).map((c: any) => ({
+              ...c,
+              actionType: c.status === 'cancelled' ? 'cancelled' : 'restored',
+              date:       c.changeDate,
+              source:     'timetable_change',
+            }));
+            this.applyFilters();
+            this.loading = false;
+          },
+          error: () => { this.loading = false; }
+        });
+      }
     });
   }
 
@@ -270,10 +311,10 @@ export class TeacherChangesComponent implements OnInit {
 
   applyFilters(): void {
     let list = [...this.all];
-    if (this.filter !== 'all') list = list.filter(c => c.status === this.filter);
+    if (this.filter !== 'all') list = list.filter(c => c.actionType === this.filter);
     if (this.dateFilter) {
       list = list.filter(c => {
-        const dt = new Date(c.changeDate);
+        const dt = new Date(c.date || c.changeDate || c.slotDate);
         const d = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
         return d === this.dateFilter;
       });
@@ -281,63 +322,104 @@ export class TeacherChangesComponent implements OnInit {
     this.displayed = list;
   }
 
-  /** True if the changeDate is strictly in the future (tomorrow or later) */
-  isFuture(changeDate: string): boolean {
+  isFuture(dateVal: any): boolean {
     const now = new Date(); now.setHours(0, 0, 0, 0);
-    // Parse stored date safely — stored as ISO string from MongoDB e.g. "2025-01-20T00:00:00.000Z"
-    const dt = new Date(changeDate);
-    const target = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate()); // local midnight
+    const dt  = new Date(dateVal);
+    const target = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
     return target > now;
   }
 
-  restorePeriod(change: any): void {
-    if (!confirm(`Restore Period ${change.periodNumber} on ${new Date(change.changeDate).toDateString()} back to AVAILABLE?\n\nStudents will be notified via SMS.`)) return;
-    this.busy = change._id;
+  formatDate(d: any): string {
+    if (!d) return '—';
+    return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+  formatDay(d: any): string {
+    if (!d) return '';
+    return new Date(d).toLocaleDateString('en-IN', { weekday: 'long' });
+  }
 
-    this.timetableService.restoreChange(change._id).subscribe({
+  actionLabel(t: string): string {
+    const map: Record<string, string> = {
+      cancelled: 'Cancelled', restored: 'Restored', extra_offered: 'Extra Offered',
+      extra_withdrawn: 'Extra Withdrawn', room_updated: 'Room Updated'
+    };
+    return map[t] || t;
+  }
+  actionClass(t: string): string {
+    const map: Record<string, string> = {
+      cancelled: 'action-badge ab-cancelled', restored: 'action-badge ab-restored',
+      extra_offered: 'action-badge ab-extra', extra_withdrawn: 'action-badge ab-withdrawn',
+      room_updated: 'action-badge ab-room'
+    };
+    return map[t] || 'action-badge';
+  }
+  actionIcon(t: string): string {
+    const map: Record<string, string> = {
+      cancelled: 'fa-times-circle', restored: 'fa-undo', extra_offered: 'fa-plus-circle',
+      extra_withdrawn: 'fa-minus-circle', room_updated: 'fa-map-marker-alt'
+    };
+    return map[t] || 'fa-circle';
+  }
+  rowClass(item: any): string {
+    const map: Record<string, string> = {
+      cancelled: 'row-cancelled', restored: 'row-restored', extra_offered: 'row-extra',
+      extra_withdrawn: 'row-withdrawn', room_updated: 'row-room'
+    };
+    return map[item.actionType] || '';
+  }
+
+  restorePeriod(item: any): void {
+    if (!confirm(`Restore Period ${item.periodNumber} on ${this.formatDate(item.date)}?\nStudents will be notified via SMS.`)) return;
+    this.busy = item._id;
+    this.timetableService.restoreChange(item._id).subscribe({
       next: (res) => {
         this.busy = '';
-        // Update locally
-        const idx = this.all.findIndex(c => c._id === change._id);
-        if (idx > -1) { this.all[idx].status = 'available'; this.all[idx].smsSent = false; }
+        const idx = this.all.findIndex(c => c._id === item._id);
+        if (idx > -1) { this.all[idx].actionType = 'restored'; this.all[idx].status = 'available'; }
         this.applyFilters();
-        this.showToast('Period restored! Students notified via SMS ✅', 'success');
+        this.showToast(res.message || 'Period restored! Students notified ✅', 'success');
       },
-      error: (err) => {
-        this.busy = '';
-        this.showToast(err.error?.message || 'Failed to restore period.', 'error');
-      }
+      error: (err) => { this.busy = ''; this.showToast(err.error?.message || 'Failed to restore.', 'error'); }
     });
   }
 
-  cancelPeriod(change: any): void {
-    if (!confirm(`Cancel Period ${change.periodNumber} on ${new Date(change.changeDate).toDateString()} again?\n\nStudents will be notified via SMS.`)) return;
-    this.busy = change._id;
-
-    // Re-create the cancellation by posting again
-    const dt = new Date(change.changeDate);
+  cancelPeriod(item: any): void {
+    if (!confirm(`Cancel Period ${item.periodNumber} on ${this.formatDate(item.date)} again?`)) return;
+    this.busy = item._id;
+    const dt = new Date(item.date);
     const dateStr = `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
     this.timetableService.markUnavailable(
-      change.fixedTimetableEntry?._id || change.fixedTimetableEntry,
-      dateStr,
-      change.reason
+      item.fixedTimetableEntry?._id || item.fixedTimetableEntry,
+      dateStr, item.reason
     ).subscribe({
       next: () => {
         this.busy = '';
-        const idx = this.all.findIndex(c => c._id === change._id);
-        if (idx > -1) { this.all[idx].status = 'cancelled'; this.all[idx].smsSent = false; }
+        const idx = this.all.findIndex(c => c._id === item._id);
+        if (idx > -1) { this.all[idx].actionType = 'cancelled'; this.all[idx].status = 'cancelled'; }
         this.applyFilters();
-        this.showToast('Period cancelled again. Students notified via SMS.', 'success');
+        this.showToast('Period cancelled. Students notified.', 'success');
       },
-      error: (err) => {
+      error: (err) => { this.busy = ''; this.showToast(err.error?.message || 'Failed to cancel.', 'error'); }
+    });
+  }
+
+  withdrawExtra(item: any): void {
+    if (!confirm(`Withdraw extra class for Period ${item.periodNumber}?`)) return;
+    this.busy = item._id;
+    this.timetableService.withdrawFreeSlot(item._id).subscribe({
+      next: () => {
         this.busy = '';
-        this.showToast(err.error?.message || 'Failed to cancel period.', 'error');
-      }
+        const idx = this.all.findIndex(c => c._id === item._id);
+        if (idx > -1) this.all[idx].actionType = 'extra_withdrawn';
+        this.applyFilters();
+        this.showToast('Extra class withdrawn.', 'success');
+      },
+      error: (err) => { this.busy = ''; this.showToast(err.error?.message || 'Failed to withdraw.', 'error'); }
     });
   }
 
   showToast(message: string, type: 'success' | 'error'): void {
     this.toast = { show: true, message, type };
-    setTimeout(() => { this.toast.show = false; }, 4000);
+    setTimeout(() => { this.toast.show = false; }, 4500);
   }
 }

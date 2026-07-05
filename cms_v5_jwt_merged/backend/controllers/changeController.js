@@ -100,6 +100,9 @@ exports.createChange = async (req, res) => {
       existing.smsSent       = false;
       await existing.save();
       smsService.notifyStudentsAboutChange(existing).catch(console.error);
+      // Feature 4: free room when class cancelled
+      const roomStatusService = require('../services/roomStatusService');
+      roomStatusService.syncRoomAllocationsFromTimetable(new Date()).catch(console.error);
       return res.json({
         success: true,
         message: offerable
@@ -133,6 +136,10 @@ exports.createChange = async (req, res) => {
 
     smsService.notifyStudentsAboutChange(change).catch(console.error);
 
+    // Feature 4: free room when class cancelled
+    const roomStatusService = require('../services/roomStatusService');
+    roomStatusService.syncRoomAllocationsFromTimetable(new Date()).catch(console.error);
+
     res.status(201).json({
       success: true,
       message: offerable
@@ -155,10 +162,14 @@ exports.createChange = async (req, res) => {
  */
 exports.restoreChange = async (req, res) => {
   try {
-    const change = await TimetableChange.findById(req.params.id);
+    const change = await TimetableChange.findById(req.params.id)
+      .populate('teacher', 'name email')
+      .populate('subject', 'name code')
+      .populate('claimedBy', 'name email');
+
     if (!change) return res.status(404).json({ success: false, message: 'Change record not found' });
 
-    if (change.teacher.toString() !== req.user._id.toString()) {
+    if (change.teacher._id.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: 'Not authorised to restore this change' });
     }
     if (change.status === 'available') {
@@ -171,20 +182,31 @@ exports.restoreChange = async (req, res) => {
       });
     }
 
-    // Feature 1: if slot was claimed by another teacher, un-claim it
-    if (change.claimedBy) {
-      // Withdraw any FreeSlot that was booked into this slot
+    // Feature 1: if another teacher claimed this slot, cancel their extra class
+    //            and notify them that the original class has been restored.
+    const claimedTeacherId = change.claimedBy?._id || change.claimedBy;
+    let extraClassCancelled = false;
+
+    if (claimedTeacherId) {
       const dayStart = midnight(change.changeDate);
       const dayEnd   = new Date(dayStart.getTime() + 86399999);
-      await FreeSlot.updateMany(
-        {
-          teacher:      change.claimedBy,
-          slotDate:     { $gte: dayStart, $lte: dayEnd },
-          periodNumber: change.periodNumber,
-          status:       'active'
-        },
-        { status: 'withdrawn' }
-      );
+
+      // Mark all matching active FreeSlots as 'cancelled_by_restore' (preserve history)
+      const withdrawnSlots = await FreeSlot.find({
+        teacher:      claimedTeacherId,
+        slotDate:     { $gte: dayStart, $lte: dayEnd },
+        periodNumber: change.periodNumber,
+        status:       'active'
+      }).populate('teacher', 'name email').populate('subject', 'name code');
+
+      for (const fs of withdrawnSlots) {
+        fs.status = 'withdrawn';
+        await fs.save();
+        extraClassCancelled = true;
+
+        // Notify the claiming teacher their extra class was cancelled
+        smsService.notifyTeacherExtraClassCancelled(fs, change).catch(console.error);
+      }
     }
 
     change.status        = 'available';
@@ -198,7 +220,18 @@ exports.restoreChange = async (req, res) => {
 
     smsService.notifyStudentsAboutRestoration(change).catch(console.error);
 
-    res.json({ success: true, message: 'Period restored. Students will be notified via SMS.', change });
+    // Feature 4 & 6: re-sync room when class restored
+    const roomStatusService = require('../services/roomStatusService');
+    roomStatusService.syncRoomAllocationsFromTimetable(new Date()).catch(console.error);
+
+    res.json({
+      success: true,
+      message: extraClassCancelled
+        ? 'Period restored. The teacher who claimed this slot has been notified. Their extra class has been cancelled.'
+        : 'Period restored. Students will be notified via SMS.',
+      change,
+      extraClassCancelled
+    });
   } catch (err) {
     console.error('restoreChange error:', err);
     res.status(500).json({ success: false, message: 'Server error restoring change' });
@@ -295,9 +328,100 @@ exports.getOfferableSlots = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────
 
 /**
- * @desc  Hard-delete a change record
- * @route DELETE /api/changes/:id
+ * @desc  Feature 3 — Get FULL history of all actions by the logged-in teacher:
+ *        - Cancelled classes (TimetableChange status=cancelled)
+ *        - Restored classes (TimetableChange status=available)
+ *        - Extra classes offered (FreeSlot status=active)
+ *        - Extra classes withdrawn (FreeSlot status=withdrawn)
+ *        - Classroom number updates (FixedTimetable where classroomUpdatedBy = this teacher)
+ * @route GET /api/changes/my-history
+ * @access Private — teacher only
  */
+exports.getMyHistory = async (req, res) => {
+  try {
+    const teacherId = req.user._id;
+
+    // 1. All TimetableChanges for this teacher (cancelled + restored)
+    const timetableChanges = await TimetableChange.find({ teacher: teacherId })
+      .populate('subject', 'name code')
+      .populate('claimedBy', 'name email')
+      .populate('fixedTimetableEntry', 'classroomNo className')
+      .sort({ changeDate: -1 });
+
+    const changeItems = timetableChanges.map(c => ({
+      _id:          c._id,
+      actionType:   c.status === 'cancelled' ? 'cancelled' : 'restored',
+      date:         c.changeDate,
+      periodNumber: c.periodNumber,
+      startTime:    c.startTime,
+      endTime:      c.endTime,
+      subject:      c.subject,
+      className:    c.className,
+      classroomNo:  c.fixedTimetableEntry?.classroomNo || c.classroomNo || 'TBD',
+      reason:       c.reason,
+      status:       c.status,
+      offerable:    c.offerable,
+      claimedBy:    c.claimedBy,
+      smsSent:      c.smsSent,
+      updatedAt:    c.lastUpdatedAt || c.updatedAt,
+      source:       'timetable_change',
+    }));
+
+    // 2. All FreeSlots for this teacher (extra class offered + withdrawn)
+    const freeSlots = await FreeSlot.find({ teacher: teacherId })
+      .populate('subject', 'name code')
+      .sort({ slotDate: -1 });
+
+    const slotItems = freeSlots.map(fs => ({
+      _id:          fs._id,
+      actionType:   fs.status === 'active' ? 'extra_offered' : 'extra_withdrawn',
+      date:         fs.slotDate,
+      periodNumber: fs.periodNumber,
+      startTime:    fs.startTime,
+      endTime:      fs.endTime,
+      subject:      fs.subject,
+      className:    fs.className,
+      classroomNo:  fs.classroomNo || 'TBD',
+      note:         fs.note,
+      status:       fs.status,
+      smsSent:      fs.smsSent,
+      updatedAt:    fs.updatedAt,
+      source:       'free_slot',
+    }));
+
+    // 3. Classroom updates by this teacher (FixedTimetable records they updated)
+    const roomUpdates = await FixedTimetable.find({ classroomUpdatedBy: teacherId })
+      .populate('subject', 'name code')
+      .sort({ classroomUpdatedAt: -1 });
+
+    const roomItems = roomUpdates.map(e => ({
+      _id:          e._id,
+      actionType:   'room_updated',
+      date:         e.classroomUpdatedAt,
+      periodNumber: e.periodNumber,
+      startTime:    e.startTime,
+      endTime:      e.endTime,
+      subject:      e.subject,
+      className:    e.className,
+      classroomNo:  e.classroomNo,
+      dayOfWeek:    e.dayOfWeek,
+      status:       'updated',
+      updatedAt:    e.classroomUpdatedAt,
+      source:       'room_update',
+    }));
+
+    // Merge and sort newest first
+    const all = [...changeItems, ...slotItems, ...roomItems]
+      .sort((a, b) => new Date(b.date || b.updatedAt).getTime() - new Date(a.date || a.updatedAt).getTime());
+
+    res.json({ success: true, history: all, count: all.length });
+  } catch (err) {
+    console.error('getMyHistory error:', err);
+    res.status(500).json({ success: false, message: 'Error fetching history' });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
 exports.deleteChange = async (req, res) => {
   try {
     const change = await TimetableChange.findById(req.params.id);

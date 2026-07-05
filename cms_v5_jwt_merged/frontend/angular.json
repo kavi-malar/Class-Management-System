@@ -25,8 +25,8 @@
           "configurations": {
             "production": {
               "budgets": [
-                {"type": "initial", "maximumWarning": "5mb", "maximumError": "10mb"},
-                {"type": "anyComponentStyle", "maximumWarning": "10kb", "maximumError": "20kb"}
+                {"type": "initial", "maximumWarning": "500kb", "maximumError": "1mb"},
+                {"type": "anyComponentStyle", "maximumWarning": "2kb", "maximumError": "4kb"}
               ],
               "outputHashing": "all"
             },
@@ -50,6 +50,6 @@
     }
   },
   "cli": {
-    "analytics": "d3285a53-9ccc-402d-ac90-b705898d10fc"
+    "analytics": "5723b07a-da90-4b19-b513-12c17bf5c60e"
   }
 }

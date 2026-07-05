@@ -52,6 +52,11 @@ export class TimetableService {
     return this.http.get<any>(`${this.api}/changes/offerable`);
   }
 
+  /** Feature 3: Get full teacher activity history (cancels, restores, extra class, room updates) */
+  getMyHistory(): Observable<any> {
+    return this.http.get<any>(`${this.api}/changes/my-history`);
+  }
+
   // Free Slots
   getMyPeriodsForDate(date: string): Observable<any> {
     return this.http.get<any>(`${this.api}/free-slots/my-periods?date=${date}`);

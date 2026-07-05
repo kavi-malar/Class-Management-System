@@ -1,16 +1,20 @@
 /**
- * Room Allocation Controller — v4
+ * Room Allocation Controller — v5
  *
  * GET  /api/rooms              → get all rooms (all roles) — legacy, uses DB state
- * GET  /api/rooms/status       → NEW: dynamic room status from timetable
- * GET  /api/rooms/current      → NEW: alias for /status
- * GET  /api/rooms/stats        → projector inventory stats (all roles)
- * GET  /api/rooms/cancellations/today → NEW: today's cancelled classes
- * POST /api/rooms/:id/occupy   → mark room occupied (teacher or cr only)
- * POST /api/rooms/:id/free     → mark room free (teacher or cr only)
+ * GET  /api/rooms/status       → dynamic room status from timetable
+ * GET  /api/rooms/current      → alias for /status
+ * GET  /api/rooms/stats        → projector inventory stats
+ * GET  /api/rooms/cancellations/today → today's cancelled classes
+ * POST /api/rooms/sync         → NEW: sync RoomAllocation from current timetable period
+ * POST /api/rooms/:id/occupy   → mark room occupied (teacher or cr)
+ * POST /api/rooms/:id/free     → mark room free (teacher or cr)
  * POST /api/rooms/:id/projector/checkout → CR checks out projector
  * POST /api/rooms/:id/projector/return   → CR returns projector
  * PUT  /api/rooms              → admin seeds/updates rooms
+ *
+ * Feature 3 fix: occupyRoom now records bookedByRole, bookedByName, bookingSource
+ * so the dashboard can display "Booked by Teacher" vs "Booked by CR" correctly.
  */
 const RoomAllocation     = require('../models/RoomAllocation');
 const ProjectorInventory = require('../models/ProjectorInventory');
@@ -39,7 +43,7 @@ exports.getRooms = async (req, res) => {
 };
 
 // ── GET /api/rooms/status ─────────────────────────────────────────────────────
-// NEW: Dynamic room status computed from timetable + manual bookings + cancellations
+// Dynamic room status computed from timetable + manual bookings + cancellations
 exports.getRoomStatus = async (req, res) => {
   try {
     const now   = new Date();
@@ -68,7 +72,6 @@ exports.getRoomStatus = async (req, res) => {
 };
 
 // ── GET /api/rooms/cancellations/today ────────────────────────────────────────
-// NEW: All cancelled classes for today — visible to ALL teachers/roles
 exports.getTodayCancellations = async (req, res) => {
   try {
     const cancellations = await roomStatusService.getTodayCancellations(new Date());
@@ -88,8 +91,8 @@ exports.getStats = async (req, res) => {
       totalRooms:     rooms.length,
       occupiedRooms:  rooms.filter(r => r.status === 'occupied').length,
       freeRooms:      rooms.filter(r => r.status === 'free').length,
-      totalProjectors:     inventory.totalProjectors,
-      availableProjectors: inventory.availableProjectors,
+      totalProjectors:      inventory.totalProjectors,
+      availableProjectors:  inventory.availableProjectors,
       checkedOutProjectors: inventory.totalProjectors - inventory.availableProjectors
     };
     res.json({ success: true, stats });
@@ -98,8 +101,22 @@ exports.getStats = async (req, res) => {
   }
 };
 
+// ── POST /api/rooms/sync ──────────────────────────────────────────────────────
+// Feature 1 & 4: Sync RoomAllocation table from current timetable period.
+// Call this after seed, after timetable create/edit/delete, after cancel, after extra class.
+// It does NOT touch manual bookings.
+exports.syncRoomsFromTimetable = async (req, res) => {
+  try {
+    const result = await roomStatusService.syncRoomAllocationsFromTimetable(new Date());
+    res.json({ success: true, message: `Synced ${result.synced} rooms from timetable`, ...result });
+  } catch (err) {
+    console.error('syncRoomsFromTimetable error:', err);
+    res.status(500).json({ success: false, message: 'Error syncing rooms: ' + err.message });
+  }
+};
+
 // ── POST /api/rooms/:roomNumber/occupy ────────────────────────────────────────
-// Updated to set manualBooking = true
+// Feature 3 fix: records bookedByRole and bookedByName from authenticated user
 exports.occupyRoom = async (req, res) => {
   try {
     const { occupiedByClass, occupancyLabel, note } = req.body;
@@ -117,17 +134,25 @@ exports.occupyRoom = async (req, res) => {
       });
     }
 
+    // Feature 3: determine who is booking and set role/name/source
+    const bookerRole = req.user.role;   // 'teacher' | 'cr' | 'admin'
+    const bookerName = req.user.name;
+    const bookingSource = bookerRole === 'cr' ? 'manual_cr' : 'manual_teacher';
+
     room.status            = 'occupied';
     room.occupiedByClass   = occupiedByClass;
     room.occupancyLabel    = occupancyLabel || occupiedByClass;
     room.manualBooking     = true;
     room.manualBookingNote = note || null;
+    room.bookedByRole      = bookerRole;
+    room.bookedByName      = bookerName;
+    room.bookingSource     = bookingSource;
     room.lastUpdatedBy     = req.user._id;
     room.lastUpdatedAt     = new Date();
     await room.save();
 
     const populated = await RoomAllocation.findById(room._id).populate('lastUpdatedBy', 'name role');
-    res.json({ success: true, message: `Room ${room.roomNumber} manually booked`, room: populated });
+    res.json({ success: true, message: `Room ${room.roomNumber} manually booked by ${bookerName}`, room: populated });
   } catch (err) {
     console.error('occupyRoom error:', err);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -135,7 +160,6 @@ exports.occupyRoom = async (req, res) => {
 };
 
 // ── POST /api/rooms/:roomNumber/free ──────────────────────────────────────────
-// Updated to clear manualBooking flag
 exports.freeRoom = async (req, res) => {
   try {
     const room = await RoomAllocation.findOne({ roomNumber: req.params.roomNumber });
@@ -154,6 +178,9 @@ exports.freeRoom = async (req, res) => {
     room.projectorPresent  = false;
     room.manualBooking     = false;
     room.manualBookingNote = null;
+    room.bookedByRole      = null;
+    room.bookedByName      = null;
+    room.bookingSource     = null;
     room.lastUpdatedBy     = req.user._id;
     room.lastUpdatedAt     = new Date();
     await room.save();

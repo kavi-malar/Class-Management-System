@@ -1,17 +1,23 @@
 /**
- * Room Status Service — v2
+ * Room Status Service — v3
  *
  * Priority (highest → lowest):
- *   1. CR Manual Booking
- *   2. Extra Class (FreeSlot) reservation  ← NEW Feature 4
- *   3. Timetable Override (TimetableChange with classroomNo)
- *   4. Timetable Allocation (FixedTimetable.classroomNo for current period)
- *   5. Default Free
+ *   1. CR / Teacher Manual Booking          → source: 'manual_cr' | 'manual_teacher'
+ *   2. Extra Class (FreeSlot active)        → source: 'extra_class'
+ *   3. Timetable Override (TimetableChange) → source: 'timetable'
+ *   4. Timetable Allocation (FixedTimetable)→ source: 'timetable'
+ *   5. Default Free                         → source: 'free'
  *
- * Feature 4 rules:
- *   Rule A: Class cancelled → room becomes AVAILABLE (already handled: skip cancelled entries)
- *   Rule B: Extra class (FreeSlot active) → room becomes BOOKED
- *   Rule C: Lab periods → original room freed
+ * Feature 1 fix: computeRoomStatuses() now shows timetable rooms
+ *   even when no active period — displayed with source='timetable_scheduled'
+ *   so the dashboard always reflects what the timetable says.
+ *
+ * Feature 3 fix: manual bookings carry bookedByRole and bookedByName
+ *   so the frontend can show "Booked by Teacher" vs "Booked by CR".
+ *
+ * Feature 4: syncRoomAllocationsFromTimetable() — writes RoomAllocation
+ *   records from the current period's FixedTimetable entries.
+ *   Called after seed, timetable CRUD, cancel, extra class offered/withdrawn.
  */
 
 const FixedTimetable  = require('../models/FixedTimetable');
@@ -58,6 +64,10 @@ function midnight(d) {
   const x = new Date(d); x.setHours(0, 0, 0, 0); return x;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Core: compute live room statuses
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function computeRoomStatuses(now = new Date()) {
   const { dayName } = getTodayInfo(now);
   const currentPeriod = getCurrentPeriod(now);
@@ -68,27 +78,72 @@ async function computeRoomStatuses(now = new Date()) {
   const dbRoomMap = {};
   dbRooms.forEach(r => { dbRoomMap[r.roomNumber] = r; });
 
+  // ── Outside school hours or weekend: show manual bookings + scheduled timetable ──
   if (!currentPeriod || dayName === 'Sunday') {
+    // Feature 1 fix: even outside hours, show what rooms are assigned in timetable today.
+    // Find which period is closest (previous or next) for context.
+    let displayPeriod = null;
+    const currentMins = now.getHours() * 60 + now.getMinutes();
+    // Find the last period that has passed, or the next upcoming one
+    for (const [num, slot] of Object.entries(PERIOD_TIMES)) {
+      if (currentMins >= toMinutes(slot.start)) displayPeriod = parseInt(num);
+    }
+    if (!displayPeriod) displayPeriod = 1; // before school starts, show P1 context
+
+    const fixedForDisplay = dayName !== 'Sunday'
+      ? await FixedTimetable.find({ dayOfWeek: dayName, periodNumber: displayPeriod })
+          .populate('subject', 'name code').populate('teacher', 'name email')
+      : [];
+
+    const scheduledRooms = {};
+    for (const entry of fixedForDisplay) {
+      if (entry.classroomNo && entry.classroomNo !== 'TBD') {
+        scheduledRooms[entry.classroomNo] = {
+          occupiedBy: entry.className,
+          label: `${entry.className} | ${entry.subject?.name || ''} [Scheduled P${displayPeriod}]`,
+          teacher: entry.teacher?.name || ''
+        };
+      }
+    }
+
     return dbRooms.map(r => {
+      // Priority 1: manual booking always wins
       if (r.status === 'occupied' && r.manualBooking) {
         return {
           roomNumber: r.roomNumber, status: 'occupied',
           occupiedBy: r.occupiedByClass, occupancyLabel: r.occupancyLabel || r.occupiedByClass,
-          source: 'manual', currentPeriod: null, periodInfo: null,
+          source: r.bookingSource || 'manual',
+          bookedByRole: r.bookedByRole, bookedByName: r.bookedByName,
+          currentPeriod: null, periodInfo: null,
           projectorPresent: r.projectorPresent, isManualBooking: true,
+          lastUpdatedBy: r.lastUpdatedBy, lastUpdatedAt: r.lastUpdatedAt
+        };
+      }
+      // Show scheduled timetable rooms so dashboard is never all-free
+      if (scheduledRooms[r.roomNumber]) {
+        const occ = scheduledRooms[r.roomNumber];
+        return {
+          roomNumber: r.roomNumber, status: 'occupied',
+          occupiedBy: occ.occupiedBy, occupancyLabel: occ.label,
+          source: 'timetable_scheduled',
+          bookedByRole: 'timetable', bookedByName: 'Timetable',
+          currentPeriod: null, periodInfo: null,
+          projectorPresent: r.projectorPresent, isManualBooking: false,
           lastUpdatedBy: r.lastUpdatedBy, lastUpdatedAt: r.lastUpdatedAt
         };
       }
       return {
         roomNumber: r.roomNumber, status: 'free',
         occupiedBy: null, occupancyLabel: null,
-        source: 'free', currentPeriod: null, periodInfo: null,
+        source: 'free', bookedByRole: null, bookedByName: null,
+        currentPeriod: null, periodInfo: null,
         projectorPresent: r.projectorPresent, isManualBooking: false,
         lastUpdatedBy: r.lastUpdatedBy, lastUpdatedAt: r.lastUpdatedAt
       };
     });
   }
 
+  // ── During school hours: full dynamic computation ──────────────────────────
   const periodSlot = PERIOD_TIMES[currentPeriod];
   const todayStart = midnight(now);
   const todayEnd   = new Date(todayStart.getTime() + 86399999);
@@ -99,7 +154,10 @@ async function computeRoomStatuses(now = new Date()) {
     .populate('teacher', 'name email');
 
   // Changes for today's current period
-  const changes = await TimetableChange.find({ changeDate: { $gte: todayStart, $lte: todayEnd }, periodNumber: currentPeriod })
+  const changes = await TimetableChange.find({
+    changeDate: { $gte: todayStart, $lte: todayEnd },
+    periodNumber: currentPeriod
+  })
     .populate('teacher', 'name email')
     .populate('subject', 'name code');
 
@@ -121,7 +179,7 @@ async function computeRoomStatuses(now = new Date()) {
     const entryId = entry._id.toString();
     const change  = changeByEntryId[entryId];
 
-    // Feature 4 Rule A: cancelled → room is free (skip)
+    // Cancelled → room is free (skip)
     if (change && change.status === 'cancelled' && !change.classroomNo) continue;
 
     let effectiveRoom = entry.classroomNo;
@@ -131,7 +189,7 @@ async function computeRoomStatuses(now = new Date()) {
     if (change && change.classroomNo) {
       const newRoom = change.classroomNo.trim();
       if (newRoom.toLowerCase().startsWith('lab')) {
-        // Feature 4 Rule C: Lab movement — original room freed
+        // Lab movement — original room freed
         labOccupancy[newRoom] = {
           occupiedBy: entry.className,
           label: `${entry.className} | ${entry.subject?.name || ''} | Lab`,
@@ -143,24 +201,24 @@ async function computeRoomStatuses(now = new Date()) {
       }
     }
 
+    // Feature 5 fix: skip TBD rooms entirely
     if (effectiveRoom && effectiveRoom !== 'TBD') {
       if (!roomOccupancy[effectiveRoom]) {
         roomOccupancy[effectiveRoom] = {
           occupiedBy: entry.className,
           label: `${entry.className} | ${entry.subject?.name || ''}`,
-          source, className: entry.className, teacher: entry.teacher?.name || ''
+          source, className: entry.className,
+          teacher: entry.teacher?.name || '',
+          bookedByRole: 'timetable',
+          bookedByName: 'Timetable'
         };
       }
     }
   }
 
-  // Feature 4 Rule B: Extra classes occupy rooms
-  // FreeSlots don't have a fixed classroomNo by default — they inherit from the TimetableChange
-  // or we mark it as TBD. We add them to occupancy only if they have a room.
-  // We store them separately to show source='extra_class'
+  // Extra classes occupy rooms
   const extraClassOccupancy = {};
   for (const fs of freeSlots) {
-    // Look up TimetableChange to get classroomNo if this is a claimed offerable slot
     let room = null;
     const tc = changes.find(c => c.claimedBy?.toString() === fs.teacher?._id?.toString() && c.periodNumber === currentPeriod);
     if (tc && tc.fixedTimetableEntry) {
@@ -171,7 +229,9 @@ async function computeRoomStatuses(now = new Date()) {
       extraClassOccupancy[room] = {
         occupiedBy: fs.teacher?.name || 'Extra Class',
         label: `Extra: ${fs.subject?.name || ''} | ${fs.teacher?.name || ''}`,
-        source: 'extra_class'
+        source: 'extra_class',
+        bookedByRole: 'extra_class',
+        bookedByName: fs.teacher?.name || 'Extra Class'
       };
     }
   }
@@ -183,20 +243,25 @@ async function computeRoomStatuses(now = new Date()) {
     const manual = dbRoom.status === 'occupied' && dbRoom.manualBooking;
 
     if (manual) {
+      // Feature 3: use stored bookedByRole/bookedByName from DB
       result.push({
         roomNumber: rn, status: 'occupied',
         occupiedBy: dbRoom.occupiedByClass, occupancyLabel: dbRoom.occupancyLabel || dbRoom.occupiedByClass,
-        source: 'manual', currentPeriod, periodInfo: periodSlot,
+        source: dbRoom.bookingSource || 'manual',
+        bookedByRole: dbRoom.bookedByRole,
+        bookedByName: dbRoom.bookedByName,
+        currentPeriod, periodInfo: periodSlot,
         projectorPresent: dbRoom.projectorPresent, isManualBooking: true,
         lastUpdatedBy: dbRoom.lastUpdatedBy, lastUpdatedAt: dbRoom.lastUpdatedAt
       });
     } else if (extraClassOccupancy[rn]) {
-      // Feature 4 Rule B: Extra class takes priority over empty
       const occ = extraClassOccupancy[rn];
       result.push({
         roomNumber: rn, status: 'occupied',
         occupiedBy: occ.occupiedBy, occupancyLabel: occ.label,
-        source: 'extra_class', currentPeriod, periodInfo: periodSlot,
+        source: 'extra_class',
+        bookedByRole: occ.bookedByRole, bookedByName: occ.bookedByName,
+        currentPeriod, periodInfo: periodSlot,
         projectorPresent: dbRoom.projectorPresent, isManualBooking: false,
         lastUpdatedBy: dbRoom.lastUpdatedBy, lastUpdatedAt: dbRoom.lastUpdatedAt
       });
@@ -205,7 +270,9 @@ async function computeRoomStatuses(now = new Date()) {
       result.push({
         roomNumber: rn, status: 'occupied',
         occupiedBy: occ.occupiedBy, occupancyLabel: occ.label,
-        source: occ.source, currentPeriod, periodInfo: periodSlot,
+        source: occ.source,
+        bookedByRole: occ.bookedByRole, bookedByName: occ.bookedByName,
+        currentPeriod, periodInfo: periodSlot,
         projectorPresent: dbRoom.projectorPresent, isManualBooking: false,
         lastUpdatedBy: dbRoom.lastUpdatedBy, lastUpdatedAt: dbRoom.lastUpdatedAt
       });
@@ -213,7 +280,8 @@ async function computeRoomStatuses(now = new Date()) {
       result.push({
         roomNumber: rn, status: 'free',
         occupiedBy: null, occupancyLabel: null,
-        source: 'free', currentPeriod, periodInfo: periodSlot,
+        source: 'free', bookedByRole: null, bookedByName: null,
+        currentPeriod, periodInfo: periodSlot,
         projectorPresent: dbRoom.projectorPresent, isManualBooking: false,
         lastUpdatedBy: dbRoom.lastUpdatedBy, lastUpdatedAt: dbRoom.lastUpdatedAt
       });
@@ -225,7 +293,8 @@ async function computeRoomStatuses(now = new Date()) {
     result.push({
       roomNumber: labName, status: 'occupied',
       occupiedBy: labInfo.occupiedBy, occupancyLabel: labInfo.label,
-      source: 'lab', currentPeriod, periodInfo: periodSlot,
+      source: 'lab', bookedByRole: 'timetable', bookedByName: 'Timetable',
+      currentPeriod, periodInfo: periodSlot,
       projectorPresent: false, isManualBooking: false,
       isLab: true, originalRoom: labInfo.fromRoom,
       lastUpdatedBy: null, lastUpdatedAt: null
@@ -234,6 +303,134 @@ async function computeRoomStatuses(now = new Date()) {
 
   return result;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Feature 1 & 4: Sync RoomAllocation records from current period timetable
+// This writes to the DB so even the legacy /api/rooms endpoint reflects timetable.
+// Does NOT overwrite manual bookings.
+// ─────────────────────────────────────────────────────────────────────────────
+async function syncRoomAllocationsFromTimetable(now = new Date()) {
+  const { dayName } = getTodayInfo(now);
+  const currentPeriod = getCurrentPeriod(now);
+
+  // If no active period, clear all non-manual timetable occupancies
+  if (!currentPeriod || dayName === 'Sunday') {
+    await RoomAllocation.updateMany(
+      { manualBooking: { $ne: true }, status: 'occupied', bookingSource: 'timetable' },
+      {
+        $set: {
+          status: 'free', occupiedByClass: null, occupancyLabel: null,
+          bookedByRole: null, bookedByName: null, bookingSource: null
+        }
+      }
+    );
+    return { synced: 0, cleared: true, reason: 'outside_hours' };
+  }
+
+  const todayStart = midnight(now);
+  const todayEnd   = new Date(todayStart.getTime() + 86399999);
+
+  // Get all fixed entries for the current period today
+  const fixedEntries = await FixedTimetable.find({ dayOfWeek: dayName, periodNumber: currentPeriod })
+    .populate('subject', 'name code')
+    .populate('teacher', 'name email');
+
+  // Get cancellations for today's current period
+  const changes = await TimetableChange.find({
+    changeDate: { $gte: todayStart, $lte: todayEnd },
+    periodNumber: currentPeriod
+  });
+  const cancelledEntryIds = new Set(
+    changes.filter(c => c.status === 'cancelled').map(c => c.fixedTimetableEntry?.toString())
+  );
+
+  // Active free slots (extra classes)
+  const freeSlots = await FreeSlot.find({
+    slotDate: { $gte: todayStart, $lte: todayEnd },
+    periodNumber: currentPeriod,
+    status: 'active'
+  }).populate('teacher', 'name email').populate('subject', 'name code');
+
+  // First: clear all non-manual timetable occupancies (will re-set below)
+  await RoomAllocation.updateMany(
+    { manualBooking: { $ne: true }, status: 'occupied', bookingSource: 'timetable' },
+    {
+      $set: {
+        status: 'free', occupiedByClass: null, occupancyLabel: null,
+        bookedByRole: null, bookedByName: null, bookingSource: null
+      }
+    }
+  );
+
+  let synced = 0;
+
+  // Set rooms from timetable
+  for (const entry of fixedEntries) {
+    // Skip cancelled
+    if (cancelledEntryIds.has(entry._id.toString())) continue;
+    // Skip TBD rooms
+    const room = entry.classroomNo;
+    if (!room || room === 'TBD') continue;
+
+    const existing = await RoomAllocation.findOne({ roomNumber: room });
+    if (!existing) continue;
+    // Don't overwrite manual bookings
+    if (existing.manualBooking) continue;
+
+    await RoomAllocation.updateOne(
+      { roomNumber: room },
+      {
+        $set: {
+          status: 'occupied',
+          occupiedByClass: entry.className,
+          occupancyLabel: `${entry.className} | ${entry.subject?.name || ''}`,
+          bookedByRole: 'timetable',
+          bookedByName: 'Timetable',
+          bookingSource: 'timetable',
+          lastUpdatedAt: new Date()
+        }
+      }
+    );
+    synced++;
+  }
+
+  // Set rooms from extra classes (FreeSlots)
+  for (const fs of freeSlots) {
+    const tc = changes.find(c =>
+      c.claimedBy?.toString() === fs.teacher?._id?.toString() &&
+      c.periodNumber === currentPeriod
+    );
+    let room = null;
+    if (tc && tc.fixedTimetableEntry) {
+      const ftEntry = fixedEntries.find(e => e._id.toString() === tc.fixedTimetableEntry?.toString());
+      room = ftEntry?.classroomNo || tc.classroomNo || null;
+    }
+    if (!room || room === 'TBD') continue;
+
+    const existing = await RoomAllocation.findOne({ roomNumber: room });
+    if (!existing || existing.manualBooking) continue;
+
+    await RoomAllocation.updateOne(
+      { roomNumber: room },
+      {
+        $set: {
+          status: 'occupied',
+          occupiedByClass: fs.teacher?.name || 'Extra Class',
+          occupancyLabel: `Extra: ${fs.subject?.name || ''} | ${fs.teacher?.name || ''}`,
+          bookedByRole: 'extra_class',
+          bookedByName: fs.teacher?.name || 'Extra Class',
+          bookingSource: 'extra_class',
+          lastUpdatedAt: new Date()
+        }
+      }
+    );
+    synced++;
+  }
+
+  return { synced, period: currentPeriod, dayName };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function getTodayCancellations(now = new Date()) {
   const todayStart = midnight(now);
@@ -261,7 +458,8 @@ async function getTodayCancellations(now = new Date()) {
     subject:      c.subject,
     teacher:      c.teacher,
     reason:       c.reason,
-    classroomNo:  c.fixedTimetableEntry?.classroomNo || 'TBD',
+    // Feature 5: prefer TimetableChange.classroomNo → FixedTimetable.classroomNo → 'TBD'
+    classroomNo:  c.classroomNo || c.fixedTimetableEntry?.classroomNo || 'TBD',
     changeDate:   c.changeDate,
     status:       c.status,
     offerable:    c.offerable,
@@ -278,12 +476,13 @@ function computeCounters(rooms) {
     manualBookings:     rooms.filter(r => r.isManualBooking).length,
     labOccupied:        rooms.filter(r => r.isLab).length,
     extraClassOccupied: rooms.filter(r => r.source === 'extra_class').length,
-    timetableOccupied:  rooms.filter(r => r.source === 'timetable' && !r.isLab).length
+    timetableOccupied:  rooms.filter(r => (r.source === 'timetable' || r.source === 'timetable_scheduled') && !r.isLab).length
   };
 }
 
 module.exports = {
   computeRoomStatuses,
+  syncRoomAllocationsFromTimetable,
   getTodayCancellations,
   computeCounters,
   getCurrentPeriod,

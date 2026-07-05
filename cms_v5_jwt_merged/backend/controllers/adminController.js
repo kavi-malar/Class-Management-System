@@ -327,6 +327,12 @@ exports.upsertTimetableEntry = async (req, res) => {
       .populate('subject', 'name code')
       .populate('teacher', 'name email');
 
+    // Feature 1 & 4: Sync RoomAllocation so dashboard reflects immediately
+    const roomStatusService = require('../services/roomStatusService');
+    roomStatusService.syncRoomAllocationsFromTimetable(new Date()).catch(e =>
+      console.error('Room sync after upsert failed:', e)
+    );
+
     res.json({ success: true, message: 'Timetable entry saved', entry: populated });
   } catch (err) {
     console.error('upsertTimetableEntry error:', err);
@@ -347,6 +353,13 @@ exports.deleteTimetableEntry = async (req, res) => {
     }
     const result = await FixedTimetable.findOneAndDelete({ className, dayOfWeek, periodNumber: Number(periodNumber) });
     if (!result) return res.status(404).json({ success: false, message: 'Entry not found' });
+
+    // Feature 4: sync rooms after deletion so freed room shows immediately
+    const roomStatusService = require('../services/roomStatusService');
+    roomStatusService.syncRoomAllocationsFromTimetable(new Date()).catch(e =>
+      console.error('Room sync after delete failed:', e)
+    );
+
     res.json({ success: true, message: 'Entry deleted' });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error' });
@@ -397,6 +410,12 @@ exports.duplicateTimetable = async (req, res) => {
     }
 
     res.json({ success: true, message: `Duplicated ${inserted} entries from ${sourceClass} to ${targetClass}`, inserted });
+
+    // Feature 4: sync rooms after duplication
+    const roomStatusService = require('../services/roomStatusService');
+    roomStatusService.syncRoomAllocationsFromTimetable(new Date()).catch(e =>
+      console.error('Room sync after duplicate failed:', e)
+    );
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error duplicating timetable' });
   }

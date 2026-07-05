@@ -1,4 +1,4 @@
 export const environment = {
   production: false,
-  apiUrl: 'https://class-management-system-1.onrender.com/api'
+  apiUrl: 'http://localhost:5000/api'
 };

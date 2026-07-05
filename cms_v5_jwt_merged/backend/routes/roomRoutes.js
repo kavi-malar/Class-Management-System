@@ -3,16 +3,21 @@ const router  = express.Router();
 const {
   getRooms, getRoomStatus, getTodayCancellations,
   getStats, occupyRoom, freeRoom,
-  checkoutProjector, returnProjector, adminOverview
+  checkoutProjector, returnProjector, adminOverview,
+  syncRoomsFromTimetable
 } = require('../controllers/roomController');
 const { protect, authorize } = require('../middleware/auth');
 
 // ── Read endpoints (all authenticated users) ──────────────────────────────────
 router.get('/',                       protect, getRooms);
-router.get('/status',                 protect, getRoomStatus);       // NEW: dynamic status
-router.get('/current',                protect, getRoomStatus);       // NEW: alias
+router.get('/status',                 protect, getRoomStatus);       // dynamic status
+router.get('/current',                protect, getRoomStatus);       // alias
 router.get('/stats',                  protect, getStats);
-router.get('/cancellations/today',    protect, getTodayCancellations); // NEW: cancellations
+router.get('/cancellations/today',    protect, getTodayCancellations);
+
+// ── Sync: rebuild RoomAllocation from current timetable period ────────────────
+// Feature 1 & 4: called after seed, timetable CRUD, cancel, extra class
+router.post('/sync',                  protect, syncRoomsFromTimetable);
 
 // ── Admin ─────────────────────────────────────────────────────────────────────
 router.get('/admin/overview',         protect, authorize('admin'), adminOverview);
