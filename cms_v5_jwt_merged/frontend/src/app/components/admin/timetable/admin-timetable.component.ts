@@ -367,12 +367,7 @@ export class AdminTimetableComponent implements OnInit {
 
   constructor(private adminSvc: AdminService, private authSvc: AuthService) {}
 
-  ngOnInit(): void {
-    this.loadClasses();
-    // Load subjects & teachers immediately so dropdowns are ready
-    // before the user clicks Edit (fixes empty dropdown bug)
-    this.loadSubjectsTeachers();
-  }
+  ngOnInit(): void { this.loadClasses(); }
 
   loadClasses(): void {
     this.adminSvc.getTimetableClasses().subscribe({
@@ -403,7 +398,6 @@ export class AdminTimetableComponent implements OnInit {
 
   toggleEdit(): void {
     this.editMode = !this.editMode;
-    // subjects/teachers already loaded in ngOnInit; reload if somehow empty
     if (this.editMode && this.subjects.length === 0) this.loadSubjectsTeachers();
     if (!this.editMode) this.cancelEdit();
   }

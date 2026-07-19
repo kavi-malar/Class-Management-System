@@ -58,32 +58,14 @@ const roomAllocationSchema = new mongoose.Schema({
   },
   lastUpdatedAt: { type: Date, default: null },
 
-  // ── Manual booking flag ─────────────────────────────────────────
-  // When true, this room's status is a deliberate manual booking
+  // ── NEW: Explicit CR manual booking flag ────────────────────────
+  // When true, this room's status is a deliberate manual CR booking
   // and overrides any timetable-derived status.
   manualBooking: {
     type: Boolean,
     default: false
   },
   manualBookingNote: {
-    type: String,
-    default: null
-  },
-
-  // ── Feature 3: Booking ownership ────────────────────────────────
-  // Who booked this room (role-level: teacher | cr | timetable | extra_class)
-  bookedByRole: {
-    type: String,
-    enum: ['teacher', 'cr', 'timetable', 'extra_class', null],
-    default: null
-  },
-  // Display name of the person who made the manual booking
-  bookedByName: {
-    type: String,
-    default: null
-  },
-  // Source category for display: 'manual_teacher' | 'manual_cr' | 'timetable' | 'extra_class'
-  bookingSource: {
     type: String,
     default: null
   }

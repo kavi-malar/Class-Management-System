@@ -77,6 +77,13 @@ const timetableData = [
   ['Saturday',  5, 3, '107'],
   ['Saturday',  6, 0, '105'],
   ['Saturday',  8, 2, '108'],
+  // Sunday Demo Timetable
+/*['Sunday', 1, 0, '105'],   // Mathematics
+['Sunday', 2, 1, '106'],   // Physics
+['Sunday', 3, 4, '107'],   // Computer Science
+['Sunday', 4, 2, '108'],   // Chemistry
+['Sunday', 5, 3, '109'],   // English
+['Sunday', 6, 5, '110'], */  // Biology
 ];
 
 const seed = async () => {
@@ -182,6 +189,9 @@ const seed = async () => {
     ['Tuesday',  2, 1, '110'],
     ['Wednesday',4, 2, '112'],
     ['Thursday', 1, 3, '110'],
+   /* ['Sunday', 1, 4, '111'],
+    ['Sunday', 2, 0, '112'],
+    ['Sunday', 3, 2, '113'],*/
   ];
   for (const [day, periodNum, subIdx, classroomNo] of cseB) {
     const slot = PERIOD_TIMES[periodNum];
@@ -211,6 +221,9 @@ const seed = async () => {
     ['Friday',    3, 3, '121'],   // English
     ['Saturday',  2, 2, '123'],   // Chemistry
     ['Saturday',  4, 4, '122'],   // Computer Science
+   /* ['Sunday', 1, 1, '121'],
+    ['Sunday', 2, 4, '122'],
+    ['Sunday', 3, 0, '123'],*/
   ];
   for (const [day, periodNum, subIdx, classroomNo] of eceA) {
     const slot = PERIOD_TIMES[periodNum];
@@ -240,45 +253,43 @@ const seed = async () => {
   await ProjectorInventory.create({ totalProjectors: 10, availableProjectors: 10 });
   console.log('✅ Projector inventory: 10 total, 10 available');
 
-  // ── Lab Period Demo — Feature 5: every weekday has a lab session ──────────────
-  // TimetableChange status='available' + classroomNo='Lab X' frees the original
-  // classroom and shows the lab as occupied on the Room Dashboard (Features 4 & 6).
-  const LAB_SCHEDULE = {
-    Monday:    { periodNumber: 3, lab: 'Lab 1' },
-    Tuesday:   { periodNumber: 5, lab: 'Lab 2' },
-    Wednesday: { periodNumber: 2, lab: 'Lab 3' },
-    Thursday:  { periodNumber: 4, lab: 'Lab 1' },
-    Friday:    { periodNumber: 6, lab: 'Lab 2' },
-    Saturday:  { periodNumber: 3, lab: 'Lab 3' },
-  };
-  const DAY_LIST = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
-  const P_START  = {1:'09:00',2:'09:45',3:'10:45',4:'11:30',5:'13:00',6:'13:45',7:'14:30',8:'15:15'};
-  const P_END    = {1:'09:45',2:'10:30',3:'11:30',4:'12:15',5:'13:45',6:'14:30',7:'15:15',8:'16:00'};
-  const todayBase = new Date(); todayBase.setHours(0, 0, 0, 0);
-  const todayDow  = todayBase.getDay();
-  let labCount = 0;
-  for (const labDay of DAY_LIST) {
-    const { periodNumber, lab } = LAB_SCHEDULE[labDay];
-    const ftE = await FixedTimetable.findOne({ dayOfWeek: labDay, periodNumber, className: 'CSE-A' });
-    if (!ftE) { console.log('ℹ️  Lab demo: no P' + periodNumber + ' for CSE-A on ' + labDay + ' — skipped'); continue; }
-    const targetDow = DAY_LIST.indexOf(labDay) + 1;
-    const diff = targetDow - todayDow;
-    const labDate = new Date(todayBase.getTime() + diff * 86400000);
+  // ── Lab Period Demo (Feature 2) ───────────────────────────────────────────────
+  // Create a TimetableChange for today showing CSE-A moved to Lab 3 for Period 3
+  // This causes Room 205 to appear "free" and Lab 3 to appear "occupied" automatically
+ // const TimetableChange = require('../models/TimetableChange');
+  const todayDayNames   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  const todayDayName    = todayDayNames[new Date().getDay()];
+  // Find the Period 3 entry for CSE-A on today's day
+  const p3Entry = await FixedTimetable.findOne({
+    dayOfWeek: todayDayName, periodNumber: 3, className: 'CSE-A'
+  });
+  if (p3Entry) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     await TimetableChange.findOneAndUpdate(
-      { fixedTimetableEntry: ftE._id, changeDate: { $gte: labDate, $lte: new Date(labDate.getTime() + 86399999) } },
+      { fixedTimetableEntry: p3Entry._id, changeDate: { $gte: today, $lte: new Date(today.getTime() + 86399999) } },
       {
-        changeDate: labDate, fixedTimetableEntry: ftE._id,
-        teacher: ftE.teacher, subject: ftE.subject, periodNumber,
-        startTime: P_START[periodNumber], endTime: P_END[periodNumber],
-        className: 'CSE-A', status: 'available', changeType: 'teacher_available',
-        classroomNo: lab, reason: lab + ' session — original room freed', lastUpdatedAt: new Date()
+        changeDate:          today,
+        fixedTimetableEntry: p3Entry._id,
+        teacher:             p3Entry.teacher,
+        subject:             p3Entry.subject,
+        periodNumber:        3,
+        startTime:           '10:45',
+        endTime:             '11:30',
+        className:           'CSE-A',
+        status:              'available',   // class is ON — just in a lab
+        changeType:          'teacher_available',
+        classroomNo:         'Lab 3',       // override: moved to Lab 3
+        reason:              'CS Lab session — moved to Lab 3',
+        lastUpdatedAt:       new Date()
       },
       { upsert: true }
     );
-    console.log('✅ Lab demo: CSE-A P' + periodNumber + ' on ' + labDay + ' → ' + lab);
-    labCount++;
+    console.log(`✅ Lab demo: CSE-A P3 on ${todayDayName} → Lab 3 (Room 205 freed automatically)`);
+  } else {
+    console.log(`ℹ️  No P3 for CSE-A on ${todayDayName} — lab demo skipped`);
   }
-  console.log('✅ Lab sessions seeded for ' + labCount + '/6 weekdays (Mon–Sat)');
+
   console.log('\n📋 LOGIN CREDENTIALS:');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   console.log('ADMIN:      admin@school.edu          / admin123');
@@ -287,20 +298,6 @@ const seed = async () => {
   console.log('CR CSE-B:   cr.cseb@student.edu        / cr123456');
   console.log('STUDENT:    rahul@student.edu           / student123');
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-
-  // Feature 1 & 4: Sync RoomAllocation from timetable so room dashboard
-  // immediately reflects seeded classroomNo values — no manual edit needed.
-  try {
-    const roomStatusService = require('./services/roomStatusService');
-    const syncResult = await roomStatusService.syncRoomAllocationsFromTimetable(new Date());
-    if (syncResult.cleared) {
-      console.log(`ℹ️  Room sync: outside active period hours — rooms set to free (timetable context shown at next period)`);
-    } else {
-      console.log(`✅ Room sync: ${syncResult.synced} rooms occupied from timetable (Period ${syncResult.period}, ${syncResult.dayName})`);
-    }
-  } catch (syncErr) {
-    console.warn('⚠️  Room sync skipped (non-fatal):', syncErr.message);
-  }
 
   await mongoose.disconnect();
   console.log('\n✅ Seeding complete!');

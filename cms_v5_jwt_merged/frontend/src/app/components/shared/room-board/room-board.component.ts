@@ -95,8 +95,8 @@ import { AuthService } from '../../../services/auth.service';
       <div *ngFor="let room of rooms"
            class="rb-cell"
            [class.rb-cell-free]="room.status === 'free'"
-           [class.rb-cell-occ]="room.status === 'occupied' && (room.source === 'timetable' || room.source === 'timetable_scheduled' || room.source === 'extra_class')"
-           [class.rb-cell-manual]="room.status === 'occupied' && (room.source === 'manual' || room.source === 'manual_cr' || room.source === 'manual_teacher')"
+           [class.rb-cell-occ]="room.status === 'occupied' && (room.source === 'timetable' || room.source === 'extra_class')"
+           [class.rb-cell-manual]="room.status === 'occupied' && room.source === 'manual'"
            [class.rb-cell-lab]="room.source === 'lab'"
            [class.rb-cell-clickable]="canEdit && (room.status === 'free' || room.isManualBooking)"
            (click)="canEdit && onCellClick(room)">
@@ -130,13 +130,10 @@ import { AuthService } from '../../../services/auth.service';
 
         <!-- Source label -->
         <div class="rb-cell-source" *ngIf="room.status === 'occupied'">
-          <span *ngIf="room.source === 'manual_teacher'">📌 Booked by Teacher: {{ room.bookedByName }}</span>
-          <span *ngIf="room.source === 'manual_cr'">📌 Booked by CR: {{ room.bookedByName }}</span>
-          <span *ngIf="room.source === 'manual' && !room.bookedByRole">📌 Manual Booking</span>
+          <span *ngIf="room.source === 'manual'">📌 CR Booked</span>
           <span *ngIf="room.source === 'timetable'">📅 Timetable · P{{ room.currentPeriod }}</span>
-          <span *ngIf="room.source === 'timetable_scheduled'">📅 Scheduled (Timetable)</span>
           <span *ngIf="room.source === 'lab'">🧪 Lab · P{{ room.currentPeriod }}</span>
-          <span *ngIf="room.source === 'extra_class'">📗 Extra Class by {{ room.bookedByName }}</span>
+          <span *ngIf="room.source === 'extra_class'">📗 Extra Class · P{{ room.currentPeriod }}</span>
         </div>
 
         <!-- Projector button (CR only, occupied rooms that are manually booked) -->

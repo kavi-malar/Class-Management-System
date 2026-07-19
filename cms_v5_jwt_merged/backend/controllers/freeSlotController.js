@@ -299,10 +299,6 @@ exports.createFreeSlot = async (req, res) => {
 
     smsService.notifyStudentsAboutFreeSlot(freeSlot).catch(console.error);
 
-    // Feature 4: occupy room when extra class offered
-    const roomStatusService = require('../services/roomStatusService');
-    roomStatusService.syncRoomAllocationsFromTimetable(new Date()).catch(console.error);
-
     res.status(201).json({
       success: true,
       message: 'Extra class offered! Students will be notified via SMS.',
@@ -347,10 +343,6 @@ exports.withdrawFreeSlot = async (req, res) => {
 
     smsService.notifyStudentsAboutFreeSlotWithdrawal(slot).catch(console.error);
     res.json({ success: true, message: 'Free slot withdrawn. Students will be notified.', slot });
-
-    // Feature 4: free room when extra class withdrawn
-    const roomStatusService = require('../services/roomStatusService');
-    roomStatusService.syncRoomAllocationsFromTimetable(new Date()).catch(console.error);
   } catch (err) {
     res.status(500).json({ success: false, message: 'Server error withdrawing slot' });
   }
