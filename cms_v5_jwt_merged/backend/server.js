@@ -15,8 +15,20 @@ dotenv.config({ path: path.resolve(__dirname, '.env') });
 const app = express();
 
 // ── Middleware ────────────────────────────────────────────────────────────────
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "https://kaviya.nbatch.org"
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:4200',
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   credentials: true,
 }));
 app.use(express.json());
